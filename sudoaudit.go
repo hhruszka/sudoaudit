@@ -2,9 +2,8 @@ package main
 
 import (
 	"fmt"
-	"log"
+	"github.com/zRedShift/mimemagic/v2"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -127,32 +126,48 @@ func getRunAsRootSudoCommands(lines []string) []string {
 	return rootCommands
 }
 
+/*
+- check if they are writable - ERROR
+- check if they are readable - WARNING about potential exploitation if this is a script
+- check if this is an absolute path - ERROR if not
+- if the cmd is bash or any of a scripting languages then find the script and check its permissions
+
++ how to find out if the cmd is a linux executable and can be executed through execution PATH
++ python, bash and perl scripts detection through mime types
++ check if the cmd is on the GTFOBins list -> if it is then it is EXPLOITABLE
+*/
+
 func main() {
 	// https://unix.stackexchange.com/questions/473950/sudo-disallow-shell-escapes-as-a-default
 
-	sudo, err := exec.Command("sudo", "-l", "-n").Output()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	lines := strings.Split(string(sudo), "\n")
-	//for idx, line := range lines {
-	//	fmt.Println(idx, ":", line)
+	//sudo, err := exec.Command("sudo", "-l", "-n").Output()
+	//if err != nil {
+	//	log.Fatal(err)
+	//}
+	//
+	//lines := strings.Split(string(sudo), "\n")
+	////for idx, line := range lines {
+	////	fmt.Println(idx, ":", line)
+	////}
+	//
+	//rootCommands := getRunAsRootSudoCommands(lines)
+	//
+	//for _, cmd := range rootCommands {
+	//	//fmt.Println(cmd)
+	//
+	//	fileInfo, err := os.Stat(strings.Fields(cmd)[0])
+	//	if err != nil {
+	//		fmt.Printf("%s - %s\n", cmd, err.Error())
+	//		continue
+	//	}
+	//
+	//	mimeType, _ := mimemagic.MatchFilePath(cmd, -1)
+	//
+	//	// Get permissions in octal
+	//	permissions := fileInfo.Mode().Perm()
+	//	fmt.Printf("%s %s %s\n", permissions, cmd, mimeType.MediaType())
 	//}
 
-	rootCommands := getRunAsRootSudoCommands(lines)
-
-	for _, cmd := range rootCommands {
-		//fmt.Println(cmd)
-
-		fileInfo, err := os.Stat(strings.Fields(cmd)[0])
-		if err != nil {
-			fmt.Printf("%s - %s\n", cmd, err.Error())
-			continue
-		}
-
-		// Get permissions in octal
-		permissions := fileInfo.Mode().Perm()
-		fmt.Printf("%s %s\n", permissions, cmd)
-	}
+	mimeType, _ := mimemagic.MatchFilePath(os.Args[1], -1)
+	fmt.Printf("%s\n", mimeType.MediaType())
 }
