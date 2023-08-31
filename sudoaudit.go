@@ -1,5 +1,7 @@
 package main
 
+// go mod edit -replace github.com/zRedShift/mimemagic/v2=./mimemagic-2.0.0^C
+
 import (
 	"fmt"
 	"github.com/zRedShift/mimemagic/v2"
