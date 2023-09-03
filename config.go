@@ -1,5 +1,7 @@
 package main
 
+var Interpreters = []string{`bash`, `sh`, `ksh`, `dash`, `zsh`, `fish`, `csh`, `tcsh`, `rbash`, `rksh`, `rzsh`, `wsh`, `perl5`, `python`, `python2`, `python3`, `java`, `ruby`}
+
 var exploitableSudoBinaries []string = []string{
 	"7z",
 	"aa-exec",

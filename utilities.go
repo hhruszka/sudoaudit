@@ -4,6 +4,7 @@ import (
 	"github.com/zRedShift/mimemagic/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -50,6 +51,20 @@ func isExecutableOnPath(executableName string) (string, bool) {
 	return "", false
 }
 
+type ExecutableType int
+
+const (
+	Binary ExecutableType = iota
+	Java
+	ShellScript
+	Python
+	Perl
+	Ruby
+	Other
+)
+
+var MimeTypeMapping map[string]ExecutableType = map[string]ExecutableType{"application/x-perl": Perl, "text/x-python": Python, "text/x-python3": Python, "application/x-python-code": Python, "text/x-ruby": Ruby, "application/x-ruby": Ruby, "application/x-shellscript": ShellScript}
+
 func IsPythonScript(file string) bool {
 	mimeType, _ := mimemagic.MatchFilePath(file, -1)
 	return IsListed(mimeType.MediaType(), []string{"text/x-python", "text/x-python3"})
@@ -65,7 +80,58 @@ func IsPerlScript(file string) bool {
 	return IsListed(mimeType.MediaType(), []string{"application/x-perl"})
 }
 
-func IsScript(file string) bool {
-	mimeType, _ := mimemagic.MatchFilePath(file, -1)
-	return IsListed(mimeType.MediaType(), []string{"application/x-perl", "text/x-python", "text/x-python3", "application/x-shellscript"})
+func IsScript(file string) (bool, error) {
+	mimeType, err := mimemagic.MatchFilePath(file, -1)
+	if err != nil {
+		return false, err
+	} else {
+		_, found := MimeTypeMapping[mimeType.MediaType()]
+		return found, nil
+	}
+}
+
+// IsFile checks if the given path points to a file.
+func IsFile(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular(), nil
+}
+
+// IsAccessible checks if the given path is accessible.
+func IsAccessible(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	file.Close()
+	return true, nil
+}
+
+func DoesFileExist(path string) bool {
+	_, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return false
+	}
+	return err == nil
+}
+
+func getCurrentFunctionName() string {
+	pc, _, _, _ := runtime.Caller(1)
+	funcName := runtime.FuncForPC(pc).Name()
+	return funcName
+}
+
+func findPotentialFile(line string) (filePath string) {
+	tokens := strings.Fields(line)
+
+	for _, token := range tokens {
+		if filepath.IsAbs(token) {
+			filePath = token
+			break
+		}
+	}
+
+	return filePath
 }

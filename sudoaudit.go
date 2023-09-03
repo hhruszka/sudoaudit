@@ -4,8 +4,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/zRedShift/mimemagic/v2"
+	"log"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -13,6 +14,8 @@ import (
 const UserRunSection = `^User .+ may run the following commands on`
 const UserRunAsEntry = `(\(.+(\:?.+)?\)){1} *(NOEXEC:)? *(NOPASSWD:)?`
 
+// Returns index of the first line that matches the pattern and true when such a line was found.
+// Otherwise returns zero and false.
 func getLineWithPatternIndex(pattern string, lines []string) (int, bool) {
 	reg, err := regexp.Compile(pattern)
 
@@ -30,6 +33,7 @@ func getLineWithPatternIndex(pattern string, lines []string) (int, bool) {
 	return 0, false
 }
 
+// Returns a table with indexes of lines that match pattern
 func getLinesWithPatternIndexes(pattern string, lines []string) []int {
 	var indexes []int
 
@@ -49,17 +53,25 @@ func getLinesWithPatternIndexes(pattern string, lines []string) []int {
 	return indexes
 }
 
+// This function finds all runAs lines in the output of sudo -l.
+// If commands are spreading multiple lines for runAs section then they
+// are collapsed in a single, comma seperated line with trimmed spaces.
+// It return a string table with each string representing one runAs section
+// (e.g. (root) NOPASSWD: /bin/hack) in the output of sudo -l
 func getRunAsSudoEntries(sudo []string) []string {
 	var entries []string
 
+	// Find section in the out of sudo -l where the list of runAs entries starts
 	if idx, ok := getLineWithPatternIndex(UserRunSection, sudo); ok {
 		//fmt.Printf("Found line %d\n", idx)
 
 		runAsSection := sudo[idx+1:]
+		// get indexes of all lines starting runAs entries
 		indexes := getLinesWithPatternIndexes(UserRunAsEntry, runAsSection)
 
 		var entry string
 
+		// collaps in single lines all multiple lines runAs entries
 		for idx := 0; idx < len(indexes); idx++ {
 			if idx < len(indexes)-1 {
 				entry = strings.Join(runAsSection[indexes[idx]:indexes[idx+1]], "")
@@ -73,6 +85,7 @@ func getRunAsSudoEntries(sudo []string) []string {
 	return entries
 }
 
+// Removes a pattern from a single string or strings in a table
 func removePatternFromLines(pattern string, lines ...string) []string {
 	var cleanedlines []string
 
@@ -92,6 +105,7 @@ func removePatternFromLines(pattern string, lines ...string) []string {
 	return cleanedlines
 }
 
+// Find all lines matching pattern and return them in a table
 func findLinesWithPattern(pattern string, lines ...string) []string {
 	var linesWithPattern []string
 
@@ -111,21 +125,40 @@ func findLinesWithPattern(pattern string, lines ...string) []string {
 	return linesWithPattern
 }
 
-func getRunAsRootSudoCommands(lines []string) []string {
-	var rootCommands []string
+// Finds all runAs entries giving root or ALL privileges and retrieves
+// commands from them. All commands are returned in a string table
+func getRunAsRootSudoCommands(lines []string) (nopasswdEntries []string, noexecEntries []string, bothEntries []string, passwdEntries []string) {
 	entries := getRunAsSudoEntries(lines)
 
 	if rootEntries := findLinesWithPattern(`^ *\((root|ALL) *(\:?.+)?\){1}`, entries...); rootEntries != nil {
-		entries = removePatternFromLines(UserRunAsEntry, rootEntries...)
-		for _, entry := range entries {
+		//entries = removePatternFromLines(UserRunAsEntry, rootEntries...)
+		for _, rootEntry := range rootEntries {
+			var rootCommands []string
+			entry := removePatternFromLines(UserRunAsEntry, rootEntry)[0]
 			entry = strings.Join(strings.Fields(entry), " ")
 			for _, cmd := range strings.Split(entry, ",") {
 				rootCommands = append(rootCommands, strings.TrimSpace(cmd))
 			}
+
+			if strings.Contains(rootEntry, "NOPASS") && strings.Contains(rootEntry, "NOEXEC") {
+				bothEntries = append(bothEntries, rootCommands...)
+			} else if strings.Contains(rootEntry, "NOEXEC") {
+				noexecEntries = append(noexecEntries, rootCommands...)
+			} else if strings.Contains(rootEntry, "NOPASS") {
+				nopasswdEntries = append(nopasswdEntries, rootCommands...)
+			} else {
+				passwdEntries = append(nopasswdEntries, rootCommands...)
+			}
 		}
+		//for _, entry := range entries {
+		//	entry = strings.Join(strings.Fields(entry), " ")
+		//	for _, cmd := range strings.Split(entry, ",") {
+		//		rootCommands = append(rootCommands, strings.TrimSpace(cmd))
+		//	}
+		//}
 	}
 
-	return rootCommands
+	return
 }
 
 /*
@@ -142,17 +175,24 @@ func getRunAsRootSudoCommands(lines []string) []string {
 func main() {
 	// https://unix.stackexchange.com/questions/473950/sudo-disallow-shell-escapes-as-a-default
 
-	//sudo, err := exec.Command("sudo", "-l", "-n").Output()
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
+	sudo, err := exec.Command("sudo", "-l", "-n").Output()
+	if err != nil {
+		log.Fatal(err)
+	}
+	lines := strings.Split(string(sudo), "\n")
+	nopasswdEntries, noexecEntries, bothEntries, passwdEntries := getRunAsRootSudoCommands(lines)
+
+	fmt.Println("NOEXEC & NOPASSWD flags present")
+	AnalyzeCommands(bothEntries)
+	fmt.Println("NOEXEC - password required and commands cannot create subshells (invoke other commands)")
+	AnalyzeCommands(noexecEntries)
+	fmt.Println("NOPASSWD - password not required to run a command")
+	AnalyzeCommands(nopasswdEntries)
+	fmt.Println("PASSWD no flags, password required to run a command")
+	AnalyzeCommands(passwdEntries)
+
 	//
-	//lines := strings.Split(string(sudo), "\n")
-	////for idx, line := range lines {
-	////	fmt.Println(idx, ":", line)
-	////}
-	//
-	//rootCommands := getRunAsRootSudoCommands(lines)
+	//rootCommands :=
 	//
 	//for _, cmd := range rootCommands {
 	//	//fmt.Println(cmd)
@@ -170,6 +210,6 @@ func main() {
 	//	fmt.Printf("%s %s %s\n", permissions, cmd, mimeType.MediaType())
 	//}
 
-	mimeType, _ := mimemagic.MatchFilePath(os.Args[1], -1)
-	fmt.Printf("%s\n", mimeType.MediaType())
+	//mimeType, _ := mimemagic.MatchFilePath(os.Args[1], -1)
+	//fmt.Printf("%s\n", mimeType.MediaType())
 }
