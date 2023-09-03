@@ -19,9 +19,9 @@ const (
 )
 
 type SudoRunAsCmd struct {
-	fullCommand   string      // full commands with any options etc.
-	command       string      // only command: binary or script
-	commandType   CommandType // is it an elf binary or shell script or python scrit or perl script or java
+	fullCommand   string         // full commands with any options etc.
+	command       string         // only command: binary or script
+	commandType   ExecutableType // is it an elf binary or shell script or python scrit or perl script or java
 	absolutePath  bool
 	parentDirStat fs.FileInfo
 	commandStat   fs.FileInfo
@@ -130,60 +130,60 @@ func getCommand(fullCommand string) (string, error) {
 	case `rzsh`:
 		fallthrough
 	case `wsh`:
-		return findPotentialFile(fullCommand),nil
+		return findPotentialFile(fullCommand), nil
 	case `perl`:
 		fallthrough
 	case `perl5`:
-		if strings.Contains(fullCommand,'-e') {
-			return "",nil
+		if strings.Contains(fullCommand, "-e") {
+			return "", nil
 		}
-		if strings.Contains(fullCommand,'-E') {
-			return "",nil
+		if strings.Contains(fullCommand, "-E") {
+			return "", nil
 		}
-		if strings.Contains(fullCommand,'-S') {
-			return "",nil
+		if strings.Contains(fullCommand, "-S") {
+			return "", nil
 		}
-		return findPotentialFile(fullCommand),nil
+		return findPotentialFile(fullCommand), nil
 	case `python`:
 		fallthrough
 	case `python2`:
 		fallthrough
 	case `python3`:
 		// options -c and -m are terminating, it means that any script has not been passed, and the whole command has to be analyzed manually.
-		if strings.Contains(fullCommand,`-c` {
-			return "",nil
+		if strings.Contains(fullCommand, `-c`) {
+			return "", nil
 		}
 
-		if strings.Contains(fullCommand,`-m`) {
-			return "",nil
+		if strings.Contains(fullCommand, `-m`) {
+			return "", nil
 		}
 
 		// Here we split a command line into tokens and test whether any of them is a potential file.
 		// It is done using filepath.IsAbs() function that checks if a string is an absolute path.
 		// We do not test for a file existance since it will be done later.
 		// If no token has been found that is an absolute path then the function returns empty string and nil.
-		return findPotentialFile(fullCommand),nil
+		return findPotentialFile(fullCommand), nil
 	case `java`:
 		// java programs can be run as classes with options -cp -classpath and it requires manual analysis,
 		// however they can also be run as java archives (jar files). In such cases they are run by -jar option.ccccccrjicivjhtfcgiubrgtcibvnergcncnengdtjtk
 
-		if strings.Contains(fullCommand,`-jar` {
-			for idx,token := range splitCommand {
+		if strings.Contains(fullCommand, `-jar`) {
+			for idx, token := range splitCommand {
 				if token == "-jar" {
 					if idx < len(splitCommand) && filepath.IsAbs(splitCommand[idx+1]) {
-						return splitCommand[idx+1],nil
+						return splitCommand[idx+1], nil
 					}
 				}
 			}
 		}
-		return "",nil
+		return "", nil
 	case `ruby`:
-		return findPotentialFile(fullCommand),nil
+		return findPotentialFile(fullCommand), nil
 	default:
 		return "", errors.New("command has not been recognized!")
 	}
 }
 
-func AnalyzeCommands(commands []string) error{
-
+func AnalyzeCommands(commands []string) error {
+	return nil
 }
