@@ -1,11 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"github.com/zRedShift/mimemagic/v2"
+	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 func IsListed(file string, list []string) bool {
@@ -21,7 +26,21 @@ func IsListed(file string, list []string) bool {
 }
 
 func IsWritable(path string) bool {
+	var fs os.FileInfo
+	var err error
+
+	if fs, err = os.Stat(path); err != nil {
+		return false
+	}
+	if fs.IsDir() {
+		return IsDirWritable(path)
+	}
+	if IsDirWritable(filepath.Dir(path)) {
+		// file can be replaced irrespective of ownership and permissions by a current user
+		return true
+	}
 	if fh, err := os.OpenFile(path, os.O_RDWR, 0); err == nil {
+		// file can be modified by a current user
 		_ = fh.Close()
 		return true
 	}
@@ -51,19 +70,32 @@ func isExecutableOnPath(executableName string) (string, bool) {
 	return "", false
 }
 
-type ExecutableType int
+type PathType int
 
 const (
-	Binary ExecutableType = iota
+	Binary PathType = iota
 	Java
 	ShellScript
 	Python
 	Perl
 	Ruby
+	Directory
 	Other
 )
 
-var MimeTypeMapping map[string]ExecutableType = map[string]ExecutableType{"application/x-perl": Perl, "text/x-python": Python, "text/x-python3": Python, "application/x-python-code": Python, "text/x-ruby": Ruby, "application/x-ruby": Ruby, "application/x-shellscript": ShellScript}
+var MimeTypeMapping map[string]PathType = map[string]PathType{"application/x-pie-executable": Binary, "application/x-executable": Binary, "application/x-perl": Perl, "text/x-python": Python, "text/x-python3": Python, "application/x-python-code": Python, "text/x-ruby": Ruby, "application/x-ruby": Ruby, "application/x-shellscript": ShellScript, "application/x-java-archive": Java, "inode/directory": Directory}
+
+func identifyPathType(path string) PathType {
+	// mimemagic does not recognize non-readable directories as directories, therefore this plug helps to fix it.
+	if ok, _ := IsDirectory(path); ok {
+		return Directory
+	}
+	mimeType, _ := mimemagic.MatchFilePath(path, -1)
+	if value, ok := MimeTypeMapping[mimeType.MediaType()]; ok {
+		return value
+	}
+	return Other
+}
 
 func IsPythonScript(file string) bool {
 	mimeType, _ := mimemagic.MatchFilePath(file, -1)
@@ -99,17 +131,40 @@ func IsFile(path string) (bool, error) {
 	return info.Mode().IsRegular(), nil
 }
 
-// IsAccessible checks if the given path is accessible.
-func IsAccessible(path string) (bool, error) {
-	file, err := os.Open(path)
+func IsDirectory(path string) (bool, error) {
+	info, err := os.Stat(path)
 	if err != nil {
 		return false, err
 	}
-	file.Close()
-	return true, nil
+	return info.Mode().IsDir(), nil
 }
 
-func DoesFileExist(path string) bool {
+// IsAccessible checks if the given path is accessible.
+func IsAccessible(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	_ = file.Close()
+	return true
+}
+
+// IsDirWritable checks whether the parent directory of a command is pathIsWritable. os.CreateTemp() is used to account
+// for any ACLs set for the directory that might impact user's permissions.
+func IsDirWritable(dir string) bool {
+	// Create a temporary file in the directory
+	tempFile, err := os.CreateTemp(dir, "testwrite")
+	if err != nil {
+		return false
+	}
+
+	// Remove the temporary file
+	_ = os.Remove(tempFile.Name())
+
+	return true
+}
+
+func DoesPathExist(path string) bool {
 	_, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		return false
@@ -134,4 +189,38 @@ func findPotentialFile(line string) (filePath string) {
 	}
 
 	return filePath
+}
+
+func IsExecuteable(file any) bool {
+	var fileInfo fs.FileInfo
+
+	if path, ok := file.(string); ok {
+		fileInfo, _ = os.Stat(path)
+	} else {
+		if fileInfo, ok = file.(fs.FileInfo); !ok {
+			fmt.Printf("Internal error: function provided with unsupported type of a parameter %T. Aborting\n", file)
+			os.Exit(1)
+		}
+	}
+
+	fileStat := fileInfo.Sys().(*syscall.Stat_t)
+
+	userInfo, _ := user.Current()
+	uid, _ := strconv.Atoi(userInfo.Uid)
+	gids, _ := syscall.Getgroups()
+
+	// Check if the user is the owner of the file
+	if uid == int(fileStat.Uid) {
+		return fileInfo.Mode().Perm()&0100 != 0
+	}
+
+	// Check if the user is in any of the same groups as the file
+	for _, gid := range gids {
+		if gid == int(fileStat.Gid) {
+			return fileInfo.Mode().Perm()&0010 != 0
+		}
+	}
+
+	// Otherwise, check 'others' permissions
+	return fileInfo.Mode().Perm()&0001 != 0
 }

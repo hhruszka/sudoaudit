@@ -4,66 +4,25 @@ package main
 
 import (
 	"errors"
-	"fmt"
-	"os"
-	"os/user"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
-	"syscall"
 )
-
-type SudoFlags uint8
-
-const (
-	PASSWD SudoFlags = 1 << iota
-	NOPASSWD
-	EXEC
-	NOEXEC
-)
-
-var sudoMapping map[string]SudoFlags = map[string]SudoFlags{"PASSWD:": PASSWD, "NOPASSWD:": NOPASSWD, "EXEC:": EXEC, "NOEXEC:": NOEXEC}
-
-type SudoRunAsCmd struct {
-	fullCommand    string         // full commands with any options etc.
-	command        string         // only command: binary or script
-	executableType ExecutableType // is it an elf binary or shell script or python scrit or perl script or java
-	absolutePath   bool
-	parentDirStat  os.FileInfo
-	commandStat    os.FileInfo
-	exists         bool
-	writable       bool
-	readable       bool
-	ownerInfo      *user.User
-	groupInfo      *user.Group
-	sudoFlags      SudoFlags
-}
-
-func (cmd *SudoRunAsCmd) Exists() bool {
-	return cmd.exists
-}
-
-func (cmd *SudoRunAsCmd) IsWritable() bool {
-	return cmd.writable
-}
-
-func (cmd *SudoRunAsCmd) IsReadable() bool {
-	return cmd.readable
-}
-
-func (cmd *SudoRunAsCmd) getFlags(fullCommand string) SudoFlags {
-	return cmd.sudoFlags
-}
 
 // Remove all flags from the command line.
 func removeRunAsFlags(command string) string {
 	reg, _ := regexp.Compile(` *([A-Z]+: *)*`)
-	return reg.ReplaceAllString(command, "")
+	// giving up on the below solution since it was too aggressive - replacing all
+	//return reg.ReplaceAllString(command, "")
+	if loc := reg.FindStringIndex(command); loc != nil {
+		return command[loc[1]+1:]
+	} else {
+		return command
+	}
 }
 
 // Find all flags (<FLAG>: pattern) and if mapping has been defined turn on the corresponding bit in the return value.
-func getSudoFlags(command string) (sudoFlags SudoFlags) {
+func getRunAsFlags(command string) (sudoFlags RunAsFlags) {
 	reg, _ := regexp.Compile(` *([A-Z]+: *)`)
 
 	flags := reg.FindAllString(command, -1)
@@ -73,48 +32,20 @@ func getSudoFlags(command string) (sudoFlags SudoFlags) {
 			sudoFlags |= flagBit
 		}
 	}
-	return
+	return sudoFlags
 }
 
-// This function creates SudoRunAsCmd, which is a single command from a runAs line in sudo -l output.
-// fullCmd parameter is a cleaned command, which means that sudo flags (e.g. NOPASSWD or NOEXEC) has been removed.
-func NewSudoEntry(fullcmd string, sudoFlags SudoFlags) *SudoRunAsCmd {
-	var cmd SudoRunAsCmd = SudoRunAsCmd{}
-	var err error
+func hasRunAsFlags(command string) bool {
+	reg, _ := regexp.Compile(` *([A-Z]+: *)`)
 
-	cmd.fullCommand = fullcmd
-	cmd.sudoFlags = sudoFlags
-	if cmd.command, err = getCommand(fullcmd); err != nil {
-		fmt.Printf("Internal program error in function %s: %s", getCurrentFunctionName(), err.Error())
-		os.Exit(1)
-	}
-
-	if cmd.command != "" {
-		// at this point cmd.command contains a filepath but we do not know if it is a path to an existing file
-		if DoesFileExist(cmd.command) {
-			cmd.exists = true
-			cmd.absolutePath = filepath.IsAbs(cmd.command)
-			cmd.readable = IsReadable(cmd.command)
-			cmd.writable = IsWritable(cmd.command)
-			cmd.commandStat, _ = os.Stat(cmd.command)
-			cmd.parentDirStat, err = os.Stat(filepath.Dir(cmd.command))
-
-			if sysInfo, ok := cmd.commandStat.Sys().(*syscall.Stat_t); ok {
-				userId := int(sysInfo.Uid)
-				groupId := int(sysInfo.Gid)
-
-				cmd.ownerInfo, err = user.LookupId(strconv.Itoa(userId))
-				if err != nil {
-					//fmt.Println("Error:", err)
-				}
-				cmd.groupInfo, err = user.LookupGroupId(strconv.Itoa(groupId))
-				if err != nil {
-					//fmt.Println("Error:", err)
-				}
-			}
+	flags := reg.FindAllString(command, -1)
+	for _, flag := range flags {
+		_, ok := sudoMapping[flag]
+		if ok {
+			return true
 		}
 	}
-	return &cmd
+	return false
 }
 
 func getCommand(fullCommand string) (string, error) {
@@ -226,8 +157,4 @@ func getCommand(fullCommand string) (string, error) {
 		// we should not get here but...
 		return "", errors.New("command has not been recognized!")
 	}
-}
-
-func AnalyzeCommands(commands []string) error {
-	return nil
 }
