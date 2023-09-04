@@ -16,7 +16,7 @@ import (
 func IsListed(file string, list []string) bool {
 	found := false
 	for _, entry := range list {
-		if file == filepath.Base(entry) {
+		if filepath.Base(file) == filepath.Base(entry) {
 			found = true
 			break
 		}

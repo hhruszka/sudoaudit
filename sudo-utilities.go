@@ -11,11 +11,11 @@ import (
 
 // Remove all flags from the command line.
 func removeRunAsFlags(command string) string {
-	reg, _ := regexp.Compile(` *([A-Z]+: *)*`)
+	reg, _ := regexp.Compile(`([A-Z]+: *)*`)
 	// giving up on the below solution since it was too aggressive - replacing all
 	//return reg.ReplaceAllString(command, "")
 	if loc := reg.FindStringIndex(command); loc != nil {
-		return command[loc[1]+1:]
+		return command[loc[1]:]
 	} else {
 		return command
 	}

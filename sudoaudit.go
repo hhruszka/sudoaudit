@@ -8,15 +8,20 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const UserRunSection = `^User .+ may run the following commands on`
 
 // const UserRunAsEntry = `(\(.+(\:?.+)?\)){1} *(NOEXEC:)? *(NOPASSWD:)?`
 const UserRunAsEntry = `(\(.+(\:?.+)?\)){1}`
+
+var currentUser *user.User
+var hostName string
 
 // Returns index of the first line that matches the pattern and true when such a line was found,
 // otherwise returns zero and false.
@@ -148,14 +153,17 @@ func getRunAsRootSudoCommands(lines []string) (sudoCommands []*SudoRunAsCmd) {
 			cleanedRootEntry := removePatternFromLine(UserRunAsEntry, rootEntry)
 
 			// Now let's split runAs entry into separate commands based on comma separator
-			commands := strings.Fields(cleanedRootEntry)
+			commands := strings.Split(cleanedRootEntry, ",")
 			for _, cmd := range commands {
 				// If a command does not have runAs flags set then use the ones found earlier since they are still in power.
-				if hasRunAsFlags(cleanedRootEntry) {
-					runAsFlags = getRunAsFlags(cleanedRootEntry)
+				cmd = strings.TrimSpace(cmd)
+				//fmt.Println(cmd)
+				if hasRunAsFlags(cmd) {
+					runAsFlags = getRunAsFlags(cmd)
 				}
-				removeRunAsFlags(cleanedRootEntry)
-				sudoCommands = append(sudoCommands, NewSudoEntry(cmd, runAsFlags))
+				cleanedCmd := removeRunAsFlags(cmd)
+				fmt.Println(cleanedCmd)
+				sudoCommands = append(sudoCommands, NewSudoEntry(cleanedCmd, runAsFlags))
 			}
 		}
 	}
@@ -208,11 +216,26 @@ func getRunAsRootSudoCommands(lines []string) (sudoCommands []*SudoRunAsCmd) {
 + check if the cmd is on the GTFOBins list -> if it is then it is EXPLOITABLE
 */
 
+func init() {
+	var err error
+	currentUser, err = user.Current()
+	if err != nil {
+		fmt.Printf("[!!] Failed to determine a user who is running %s application. Aborting!\n", os.Args[0])
+		os.Exit(1)
+	}
+
+	hostName, err = os.Hostname()
+	if err != nil {
+		fmt.Println("[!!] Failed to obtain a hostname. Aborting!\n")
+		os.Exit(1)
+	}
+}
+
 func main() {
 	// https://unix.stackexchange.com/questions/473950/sudo-disallow-shell-escapes-as-a-default
 	var manualAnalysisNeeded []*SudoRunAsCmd
-	var knownExploitableBinary []*SudoRunAsCmd
-	var exploitableExecutable []*SudoRunAsCmd
+	var knownExploitableBinaries []*SudoRunAsCmd
+	var exploitableExecutables []*SudoRunAsCmd
 
 	fmt.Printf("[+] Starting application: %s\n", filepath.Base(os.Args[0]))
 
@@ -248,47 +271,58 @@ func main() {
 
 	sudoCommands := getRunAsRootSudoCommands(lines)
 
-	fmt.Printf("[+] Found %d commands that can be executed with root privileges via sudo\n", len(sudoCommands))
+	fmt.Println("\n\t\t\tAUDIT RESULTS:\n\n")
+	fmt.Printf("Date: %s\n", time.Now().Format(time.DateTime))
+	fmt.Printf("Host: %s\n", hostName)
+	fmt.Printf("User: %s\n\n", currentUser.Username)
+	fmt.Println()
+	fmt.Printf("Found %d command(s) that can be executed with root privileges via sudo\n\n", len(sudoCommands))
+
 	for _, sudoCmd := range sudoCommands {
 		if sudoCmd.command == "" {
 			manualAnalysisNeeded = append(manualAnalysisNeeded, sudoCmd)
 			continue
 		}
 
+		if sudoCmd.command == "ALL" {
+			fmt.Printf("[!!] CRITICAL! sudo has been configured to allow %s user to run ALL executables/commands on the %s host with root prvileges\n", currentUser.Username, hostName)
+			//continue
+		}
+
 		if sudoCmd.DoesFileExist() && IsListed(sudoCmd.command, exploitableSudoBinaries) {
-			knownExploitableBinary = append(knownExploitableBinary, sudoCmd)
+			knownExploitableBinaries = append(knownExploitableBinaries, sudoCmd)
 		}
 
 		// Checking ownership is not needed here since a user can modify a file
 		if sudoCmd.DoesFileExist() && sudoCmd.IsFileWritable() {
-			exploitableExecutable = append(exploitableExecutable, sudoCmd)
+			exploitableExecutables = append(exploitableExecutables, sudoCmd)
 		}
 
 		// Checking ownership is not needed here since a user can create or replace a file in a directory
 		// also regardless whether a file exists
 		if sudoCmd.IsDirWritable() {
-			exploitableExecutable = append(exploitableExecutable, sudoCmd)
+			exploitableExecutables = append(exploitableExecutables, sudoCmd)
 		}
 	}
 
-	if len(knownExploitableBinary) > 0 {
-		fmt.Printf("[+] Found %d known exploitable executables:\n", len(knownExploitableBinary))
-		for _, cmd := range knownExploitableBinary {
-			cmd.printInfo()
+	if len(knownExploitableBinaries) > 0 {
+		fmt.Printf("[+] Found %d known exploitable executables:\n", len(knownExploitableBinaries))
+		for _, cmd := range knownExploitableBinaries {
+			fmt.Printf("%s\n", cmd)
 		}
 	}
 
-	if len(exploitableExecutable) > 0 {
-		fmt.Printf("[+] Found %d exploitable executables:\n", len(exploitableExecutable))
-		for _, cmd := range exploitableExecutable {
-			cmd.printInfo()
+	if len(exploitableExecutables) > 0 {
+		fmt.Printf("[+] Found %d exploitable executables:\n", len(exploitableExecutables))
+		for _, cmd := range exploitableExecutables {
+			fmt.Printf("%s\n", cmd)
 		}
 	}
 
 	if len(manualAnalysisNeeded) > 0 {
 		fmt.Printf("[+] %d found commands requires manual analysis:\n", len(manualAnalysisNeeded))
 		for _, cmd := range manualAnalysisNeeded {
-			cmd.printInfo()
+			fmt.Printf("%s\n", cmd)
 		}
 	}
 }

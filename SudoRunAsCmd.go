@@ -77,17 +77,12 @@ func (cmd *SudoRunAsCmd) CanUserReplaceFile() bool {
 	return cmd.parentDirWritable
 }
 
-func (cmd *SudoRunAsCmd) printInfo() {
-	// Mimic `ls -l` format: permissions, owner, group, filename
-	if cmd.command != "" {
-		if cmd.pathExists == true {
-			fmt.Printf("%v %v %v %v\n", cmd.pathStat.Mode().Perm(), cmd.ownerInfo.Username, cmd.groupInfo.Name, cmd.command)
-		} else {
-			fmt.Printf("%v\n", cmd.command)
-		}
-	} else {
-		fmt.Println(cmd.fullCommand)
-	}
+func (cmd *SudoRunAsCmd) String() string {
+	//cmdString := fmt.Sprintf("%+v\n", *cmd)
+	//cmdFormatted := fmt.Sprintf(strings.Join(strings.Fields(cmdString[1:len(cmdString)-2]), "\n"))
+
+	cmdFormatted := fmt.Sprintf("\n%s\n%v\n", cmd.fullCommand, cmd.command)
+	return cmdFormatted
 }
 
 // This function creates SudoRunAsCmd, which is a single command from a runAs line in sudo -l output.
@@ -105,6 +100,10 @@ func NewSudoEntry(fullCmd string, sudoFlags RunAsFlags) *SudoRunAsCmd {
 
 	if cmd.command == "" {
 		// it was not possible to determine the executable. This particular command will have to be reviewed manually.
+		return &cmd
+	}
+
+	if cmd.command == "ALL" {
 		return &cmd
 	}
 
