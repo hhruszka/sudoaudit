@@ -1,12 +1,17 @@
+//go:build linux
+
 package main
 
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"syscall"
 )
 
 type SudoFlags uint8
@@ -18,22 +23,25 @@ const (
 	NOEXEC
 )
 
+var sudoMapping map[string]SudoFlags = map[string]SudoFlags{"PASSWD:": PASSWD, "NOPASSWD:": NOPASSWD, "EXEC:": EXEC, "NOEXEC:": NOEXEC}
+
 type SudoRunAsCmd struct {
-	fullCommand   string         // full commands with any options etc.
-	command       string         // only command: binary or script
-	commandType   ExecutableType // is it an elf binary or shell script or python scrit or perl script or java
-	absolutePath  bool
-	parentDirStat fs.FileInfo
-	commandStat   fs.FileInfo
-	writable      bool
-	readable      bool
-	ownerUid      int
-	groupUid      int
-	sudoFlags     uint8
+	fullCommand    string         // full commands with any options etc.
+	command        string         // only command: binary or script
+	executableType ExecutableType // is it an elf binary or shell script or python scrit or perl script or java
+	absolutePath   bool
+	parentDirStat  os.FileInfo
+	commandStat    os.FileInfo
+	exists         bool
+	writable       bool
+	readable       bool
+	ownerInfo      *user.User
+	groupInfo      *user.Group
+	sudoFlags      SudoFlags
 }
 
 func (cmd *SudoRunAsCmd) Exists() bool {
-	return cmd.commandStat != nil
+	return cmd.exists
 }
 
 func (cmd *SudoRunAsCmd) IsWritable() bool {
@@ -45,16 +53,32 @@ func (cmd *SudoRunAsCmd) IsReadable() bool {
 }
 
 func (cmd *SudoRunAsCmd) getFlags(fullCommand string) SudoFlags {
-	return PASSWD
+	return cmd.sudoFlags
 }
 
+// Remove all flags from the command line.
 func removeRunAsFlags(command string) string {
-	return removePatternFromLines(` *([A-Z]+: +)*`, command)[0]
+	reg, _ := regexp.Compile(` *([A-Z]+: *)*`)
+	return reg.ReplaceAllString(command, "")
+}
+
+// Find all flags (<FLAG>: pattern) and if mapping has been defined turn on the corresponding bit in the return value.
+func getSudoFlags(command string) (sudoFlags SudoFlags) {
+	reg, _ := regexp.Compile(` *([A-Z]+: *)`)
+
+	flags := reg.FindAllString(command, -1)
+	for _, flag := range flags {
+		flagBit, ok := sudoMapping[flag]
+		if ok {
+			sudoFlags |= flagBit
+		}
+	}
+	return
 }
 
 // This function creates SudoRunAsCmd, which is a single command from a runAs line in sudo -l output.
 // fullCmd parameter is a cleaned command, which means that sudo flags (e.g. NOPASSWD or NOEXEC) has been removed.
-func NewSudoEntry(fullcmd string, sudoFlags uint8) *SudoRunAsCmd {
+func NewSudoEntry(fullcmd string, sudoFlags SudoFlags) *SudoRunAsCmd {
 	var cmd SudoRunAsCmd = SudoRunAsCmd{}
 	var err error
 
@@ -66,9 +90,28 @@ func NewSudoEntry(fullcmd string, sudoFlags uint8) *SudoRunAsCmd {
 	}
 
 	if cmd.command != "" {
-		// at this point cmd.command contains a filepath but we do not know if it is a patch to an existing file
+		// at this point cmd.command contains a filepath but we do not know if it is a path to an existing file
 		if DoesFileExist(cmd.command) {
+			cmd.exists = true
+			cmd.absolutePath = filepath.IsAbs(cmd.command)
+			cmd.readable = IsReadable(cmd.command)
+			cmd.writable = IsWritable(cmd.command)
+			cmd.commandStat, _ = os.Stat(cmd.command)
+			cmd.parentDirStat, err = os.Stat(filepath.Dir(cmd.command))
 
+			if sysInfo, ok := cmd.commandStat.Sys().(*syscall.Stat_t); ok {
+				userId := int(sysInfo.Uid)
+				groupId := int(sysInfo.Gid)
+
+				cmd.ownerInfo, err = user.LookupId(strconv.Itoa(userId))
+				if err != nil {
+					//fmt.Println("Error:", err)
+				}
+				cmd.groupInfo, err = user.LookupGroupId(strconv.Itoa(groupId))
+				if err != nil {
+					//fmt.Println("Error:", err)
+				}
+			}
 		}
 	}
 	return &cmd
@@ -165,12 +208,12 @@ func getCommand(fullCommand string) (string, error) {
 		return findPotentialFile(fullCommand), nil
 	case `java`:
 		// java programs can be run as classes with options -cp -classpath and it requires manual analysis,
-		// however they can also be run as java archives (jar files). In such cases they are run by -jar option.ccccccrjicivjhtfcgiubrgtcibvnergcncnengdtjtk
+		// however they can also be run as java archives (jar files). In such cases they are run by -jar option.
 
 		if strings.Contains(fullCommand, `-jar`) {
 			for idx, token := range splitCommand {
 				if token == "-jar" {
-					if idx < len(splitCommand) && filepath.IsAbs(splitCommand[idx+1]) {
+					if idx < len(splitCommand)-1 && filepath.IsAbs(splitCommand[idx+1]) {
 						return splitCommand[idx+1], nil
 					}
 				}
@@ -180,6 +223,7 @@ func getCommand(fullCommand string) (string, error) {
 	case `ruby`:
 		return findPotentialFile(fullCommand), nil
 	default:
+		// we should not get here but...
 		return "", errors.New("command has not been recognized!")
 	}
 }

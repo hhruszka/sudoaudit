@@ -55,7 +55,7 @@ func getLinesWithPatternIndexes(pattern string, lines []string) []int {
 
 // This function finds all runAs lines in the output of sudo -l.
 // If commands are spreading multiple lines for runAs section then they
-// are collapsed in a single, comma seperated line with trimmed spaces.
+// are collapsed into a single, comma seperated line with trimmed spaces.
 // It return a string table with each string representing one runAs section
 // (e.g. (root) NOPASSWD: /bin/hack) in the output of sudo -l
 func getRunAsSudoEntries(sudo []string) []string {
@@ -130,25 +130,26 @@ func findLinesWithPattern(pattern string, lines ...string) []string {
 func getRunAsRootSudoCommands(lines []string) (nopasswdEntries []string, noexecEntries []string, bothEntries []string, passwdEntries []string) {
 	entries := getRunAsSudoEntries(lines)
 
+	// Find all root or ALL runAs lines
 	if rootEntries := findLinesWithPattern(`^ *\((root|ALL) *(\:?.+)?\){1}`, entries...); rootEntries != nil {
 		//entries = removePatternFromLines(UserRunAsEntry, rootEntries...)
 		for _, rootEntry := range rootEntries {
-			var rootCommands []string
-			entry := removePatternFromLines(UserRunAsEntry, rootEntry)[0]
-			entry = strings.Join(strings.Fields(entry), " ")
-			for _, cmd := range strings.Split(entry, ",") {
-				rootCommands = append(rootCommands, strings.TrimSpace(cmd))
-			}
-
-			if strings.Contains(rootEntry, "NOPASS") && strings.Contains(rootEntry, "NOEXEC") {
-				bothEntries = append(bothEntries, rootCommands...)
-			} else if strings.Contains(rootEntry, "NOEXEC") {
-				noexecEntries = append(noexecEntries, rootCommands...)
-			} else if strings.Contains(rootEntry, "NOPASS") {
-				nopasswdEntries = append(nopasswdEntries, rootCommands...)
-			} else {
-				passwdEntries = append(nopasswdEntries, rootCommands...)
-			}
+			//var rootCommands []string
+			//entry := removePatternFromLines(UserRunAsEntry, rootEntry)[0]
+			//entry = strings.Join(strings.Fields(entry), " ")
+			//for _, cmd := range strings.Split(entry, ",") {
+			//	rootCommands = append(rootCommands, strings.TrimSpace(cmd))
+			//}
+			//
+			//if strings.Contains(rootEntry, "NOPASS") && strings.Contains(rootEntry, "NOEXEC") {
+			//	bothEntries = append(bothEntries, rootCommands...)
+			//} else if strings.Contains(rootEntry, "NOEXEC") {
+			//	noexecEntries = append(noexecEntries, rootCommands...)
+			//} else if strings.Contains(rootEntry, "NOPASS") {
+			//	nopasswdEntries = append(nopasswdEntries, rootCommands...)
+			//} else {
+			//	passwdEntries = append(nopasswdEntries, rootCommands...)
+			//}
 		}
 		//for _, entry := range entries {
 		//	entry = strings.Join(strings.Fields(entry), " ")
