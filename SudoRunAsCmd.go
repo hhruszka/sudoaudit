@@ -85,6 +85,37 @@ func (cmd *SudoRunAsCmd) String() string {
 	return cmdFormatted
 }
 
+func (cmd *SudoRunAsCmd) getRunAsFlags() []string {
+	var runAsFalgs []string
+
+	//fmt.Printf("%+v\n", cmd.runAsFlags)
+	if cmd.runAsFlags&PASSWD == PASSWD {
+		runAsFalgs = append(runAsFalgs, "PASSWD")
+	}
+	if cmd.runAsFlags&NOPASSWD == NOPASSWD {
+		runAsFalgs = append(runAsFalgs, "NOPASSWD")
+	}
+	if cmd.runAsFlags&EXEC == EXEC {
+		runAsFalgs = append(runAsFalgs, "EXEC")
+	}
+	if cmd.runAsFlags&NOEXEC == NOEXEC {
+		runAsFalgs = append(runAsFalgs, "NOEXEC")
+	}
+
+	return runAsFalgs
+}
+
+func (cmd *SudoRunAsCmd) printFileInfo() string {
+	// Extracting permission bits
+	if cmd.command != "" && cmd.pathStat != nil && cmd.ownerInfo != nil && cmd.groupInfo != nil {
+		perm := cmd.pathStat.Mode().Perm()
+
+		// Mimic `ls -l` format: permissions, owner, group, filename
+		return fmt.Sprintf("%v %8v %8v %v", perm, cmd.ownerInfo.Username, cmd.groupInfo.Name, cmd.command)
+	}
+	return ""
+}
+
 // This function creates SudoRunAsCmd, which is a single command from a runAs line in sudo -l output.
 // fullCmd parameter is a cleaned command, which means that sudo flags (e.g. NOPASSWD or NOEXEC) has been removed.
 func NewSudoEntry(fullCmd string, sudoFlags RunAsFlags) *SudoRunAsCmd {
@@ -135,23 +166,28 @@ func NewSudoEntry(fullCmd string, sudoFlags RunAsFlags) *SudoRunAsCmd {
 		// However, it might turn out that the file has not been created, and we could exploit that if
 		// we could write to a parent directory.
 		// Let see if its parent directory is accessible for us .
-		if cmd.parentDirStat, err = os.Stat(filepath.Dir(cmd.command)); err != nil {
-			cmd.parentDirStat = nil
-			if os.IsNotExist(err) {
-				// this error is a bit tricky since the directory might still exist but its parent
-				// directory is not readable for us.
-				cmd.parentDirExists = false
-			}
-			if os.IsPermission(err) {
-				// this is error is clear - we do not have permissions to read content of this directory.
+
+		// filepath.Dir() returns "." when a path has been empty or it does not contain directories.
+		parentDir := filepath.Dir(cmd.command)
+		if parentDir != "." {
+			if cmd.parentDirStat, err = os.Stat(parentDir); err != nil {
+				cmd.parentDirStat = nil
+				if os.IsNotExist(err) {
+					// this error is a bit tricky since the directory might still exist but its parent
+					// directory is not readable for us.
+					cmd.parentDirExists = false
+				}
+				if os.IsPermission(err) {
+					// this is error is clear - we do not have permissions to read content of this directory.
+					cmd.parentDirExists = true
+					cmd.parentDirReadable = false
+				}
+			} else {
+				// it might be possible to exploit this command if we have permissions to write to the parent directory.
 				cmd.parentDirExists = true
-				cmd.parentDirReadable = false
+				cmd.parentDirReadable = IsAccessible(filepath.Dir(cmd.command))
+				cmd.parentDirWritable = IsDirWritable(filepath.Dir(cmd.command))
 			}
-		} else {
-			// it might be possible to exploit this command if we have permissions to write to the parent directory.
-			cmd.parentDirExists = true
-			cmd.parentDirReadable = IsAccessible(filepath.Dir(cmd.command))
-			cmd.parentDirWritable = IsDirWritable(filepath.Dir(cmd.command))
 		}
 	}
 

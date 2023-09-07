@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -20,6 +21,7 @@ const UserRunSection = `^User .+ may run the following commands on`
 // const UserRunAsEntry = `(\(.+(\:?.+)?\)){1} *(NOEXEC:)? *(NOPASSWD:)?`
 const UserRunAsEntry = `(\(.+(\:?.+)?\)){1}`
 
+var boolMap map[bool]string = map[bool]string{false: "no", true: "yes"}
 var currentUser *user.User
 var hostName string
 
@@ -157,12 +159,11 @@ func getRunAsRootSudoCommands(lines []string) (sudoCommands []*SudoRunAsCmd) {
 			for _, cmd := range commands {
 				// If a command does not have runAs flags set then use the ones found earlier since they are still in power.
 				cmd = strings.TrimSpace(cmd)
-				//fmt.Println(cmd)
+
 				if hasRunAsFlags(cmd) {
 					runAsFlags = getRunAsFlags(cmd)
 				}
 				cleanedCmd := removeRunAsFlags(cmd)
-				fmt.Println(cleanedCmd)
 				sudoCommands = append(sudoCommands, NewSudoEntry(cleanedCmd, runAsFlags))
 			}
 		}
@@ -231,6 +232,21 @@ func init() {
 	}
 }
 
+func printCmdInfo(bufferedPrintout *bytes.Buffer, cmd *SudoRunAsCmd) {
+	_, _ = fmt.Fprintf(bufferedPrintout, "Sudo command: %s\n", cmd.fullCommand)
+	_, _ = fmt.Fprintf(bufferedPrintout, "Vulnerable executable: %s\n", cmd.command)
+	_, _ = fmt.Fprintf(bufferedPrintout, "RunAs flags: %s\n", strings.Join(cmd.getRunAsFlags(), " "))
+	_, _ = fmt.Fprintf(bufferedPrintout, "Permissions: %s\n", cmd.printFileInfo())
+	_, _ = fmt.Fprintf(bufferedPrintout, "Executable exists or is accessible: %s\n", boolMap[cmd.pathExists])
+	if cmd.pathExists {
+		_, _ = fmt.Fprintf(bufferedPrintout, "Executable is writable: %s\n", boolMap[cmd.pathIsWritable])
+	}
+	_, _ = fmt.Fprintf(bufferedPrintout, "Parent director exists or is accessible: %s\n", boolMap[cmd.parentDirExists])
+	if cmd.parentDirExists {
+		_, _ = fmt.Fprintf(bufferedPrintout, "Parent director is writable: %s\n", boolMap[cmd.parentDirWritable])
+	}
+}
+
 func main() {
 	// https://unix.stackexchange.com/questions/473950/sudo-disallow-shell-escapes-as-a-default
 	var manualAnalysisNeeded []*SudoRunAsCmd
@@ -278,14 +294,22 @@ func main() {
 	fmt.Println()
 	fmt.Printf("Found %d command(s) that can be executed with root privileges via sudo\n\n", len(sudoCommands))
 
+	var commandPermList map[string]string = make(map[string]string)
+	var notFoundCommandList map[string]string = make(map[string]string)
+
+	var bufferedPrintout *bytes.Buffer = &bytes.Buffer{}
+	var allSudoRunAsCommands []string
+
 	for _, sudoCmd := range sudoCommands {
+		allSudoRunAsCommands = append(allSudoRunAsCommands, sudoCmd.fullCommand)
+
 		if sudoCmd.command == "" {
 			manualAnalysisNeeded = append(manualAnalysisNeeded, sudoCmd)
 			continue
 		}
 
 		if sudoCmd.command == "ALL" {
-			fmt.Printf("[!!] CRITICAL! sudo has been configured to allow %s user to run ALL executables/commands on the %s host with root prvileges\n", currentUser.Username, hostName)
+			_, _ = fmt.Fprintf(bufferedPrintout, "\n[!!] CRITICAL! sudo has been configured to allow %s user to run ALL executables/commands on the %s host with root prvileges\n", currentUser.Username, hostName)
 			//continue
 		}
 
@@ -303,26 +327,63 @@ func main() {
 		if sudoCmd.IsDirWritable() {
 			exploitableExecutables = append(exploitableExecutables, sudoCmd)
 		}
+
+		if _, ok := commandPermList[sudoCmd.command]; !ok && sudoCmd.pathExists {
+			commandPermList[sudoCmd.command] = sudoCmd.printFileInfo()
+		}
+		if _, ok := notFoundCommandList[sudoCmd.command]; !ok && !sudoCmd.pathExists {
+			notFoundCommandList[sudoCmd.command] = sudoCmd.fullCommand
+		}
+
+	}
+
+	// print list of sudo runas entries, each in a seperate line
+	_, _ = fmt.Fprintf(bufferedPrintout, "\n[+] List of sudo runas commands:\n")
+	sort.Strings(allSudoRunAsCommands)
+	for _, sudoCmd := range allSudoRunAsCommands {
+		_, _ = fmt.Fprintf(bufferedPrintout, "%s\n", sudoCmd)
+	}
+
+	_, _ = fmt.Fprintf(bufferedPrintout, "\n[+] List of sudo runas executables:\n")
+	// sort and remove duplicate of executables
+	keys := make([]string, 0, len(commandPermList))
+
+	// collect keys
+	for k := range commandPermList {
+		keys = append(keys, k)
+	}
+
+	// sort keys
+	sort.Strings(keys)
+
+	// print the list of executables along with permissions and ownership
+	for _, key := range keys {
+		_, _ = fmt.Fprintf(bufferedPrintout, "%s\n", commandPermList[key])
 	}
 
 	if len(knownExploitableBinaries) > 0 {
-		fmt.Printf("[+] Found %d known exploitable executables:\n", len(knownExploitableBinaries))
+		_, _ = fmt.Fprintf(bufferedPrintout, "\n[+] Found %d potential vulnerabilities based on known exploitable executables. Check GTFOBins to get detailed information about potential exploitation methods.\n", len(knownExploitableBinaries))
 		for _, cmd := range knownExploitableBinaries {
-			fmt.Printf("%s\n", cmd)
+			_, _ = fmt.Fprintln(bufferedPrintout)
+			printCmdInfo(bufferedPrintout, cmd)
 		}
 	}
 
 	if len(exploitableExecutables) > 0 {
-		fmt.Printf("[+] Found %d exploitable executables:\n", len(exploitableExecutables))
+		_, _ = fmt.Fprintf(bufferedPrintout, "\n[+] Found %d exploitable executables:\n", len(exploitableExecutables))
 		for _, cmd := range exploitableExecutables {
-			fmt.Printf("%s\n", cmd)
+			_, _ = fmt.Fprintln(bufferedPrintout)
+			printCmdInfo(bufferedPrintout, cmd)
 		}
 	}
 
 	if len(manualAnalysisNeeded) > 0 {
-		fmt.Printf("[+] %d found commands requires manual analysis:\n", len(manualAnalysisNeeded))
+		_, _ = fmt.Fprintf(bufferedPrintout, "\n[+] %d found commands require manual analysis:\n", len(manualAnalysisNeeded))
 		for _, cmd := range manualAnalysisNeeded {
-			fmt.Printf("%s\n", cmd)
+			_, _ = fmt.Fprintln(bufferedPrintout)
+			printCmdInfo(bufferedPrintout, cmd)
 		}
 	}
+
+	fmt.Printf("%s", bufferedPrintout.String())
 }

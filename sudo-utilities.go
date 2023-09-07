@@ -27,7 +27,7 @@ func getRunAsFlags(command string) (sudoFlags RunAsFlags) {
 
 	flags := reg.FindAllString(command, -1)
 	for _, flag := range flags {
-		flagBit, ok := sudoMapping[flag]
+		flagBit, ok := sudoMapping[strings.TrimSpace(flag)]
 		if ok {
 			sudoFlags |= flagBit
 		}
@@ -40,7 +40,7 @@ func hasRunAsFlags(command string) bool {
 
 	flags := reg.FindAllString(command, -1)
 	for _, flag := range flags {
-		_, ok := sudoMapping[flag]
+		_, ok := sudoMapping[strings.TrimSpace(flag)]
 		if ok {
 			return true
 		}
