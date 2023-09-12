@@ -428,7 +428,6 @@ func GenReport(bufferedPrintout *bytes.Buffer, sudoCommands []*SudoRunAsCmd) {
 	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION %d] Executables that are known to be exploitable per GTFOBins. Check GTFOBins to get detailed information about potential exploitation methods.\n", section)
 	knownExploitableExecutable := GetCommandsWithKnownExploitableExecutables(sudoCommands)
 	if len(knownExploitableExecutable) > 0 {
-		//_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 3] List of Found %d potential vulnerabilities based on known exploitable executables. Check GTFOBins to get detailed information about potential exploitation methods.\n", len(knownExploitableExecutable))
 		for _, cmd := range knownExploitableExecutable {
 			_, _ = fmt.Fprintln(bufferedPrintout)
 			printCmdInfo(bufferedPrintout, cmd)
@@ -441,7 +440,6 @@ func GenReport(bufferedPrintout *bytes.Buffer, sudoCommands []*SudoRunAsCmd) {
 	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION %d] List of writable executables:\n", section)
 	writableExecutables := GetCommandsWithWritableExecutables(sudoCommands)
 	if len(writableExecutables) > 0 {
-		//_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 4] Found %d exploitable executables:\n", len(exploitableExecutables))
 		for _, cmd := range writableExecutables {
 			_, _ = fmt.Fprintln(bufferedPrintout)
 			printCmdInfo(bufferedPrintout, cmd)
@@ -467,7 +465,6 @@ func GenReport(bufferedPrintout *bytes.Buffer, sudoCommands []*SudoRunAsCmd) {
 	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION %d] List of sudo runAs commands that require manual analysis:\n", section)
 	manualAnalysisNeeded := GetCommandsForManualAnalysis(sudoCommands)
 	if len(manualAnalysisNeeded) > 0 {
-		//_, _ = fmt.Fprintf(bufferedPrintout, "\n[+] %d found commands require manual analysis:\n", len(manualAnalysisNeeded))
 		for _, cmd := range manualAnalysisNeeded {
 			_, _ = fmt.Fprintln(bufferedPrintout)
 			printCmdInfo(bufferedPrintout, cmd)
