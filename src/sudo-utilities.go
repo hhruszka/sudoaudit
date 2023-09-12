@@ -73,7 +73,7 @@ func getCommand(fullCommand string) (string, error) {
 	// If we got here then it means that one of a script interpreters got detected,
 	// and we need to find the actual script that will be executed.
 
-	// First check the first token passed to the script. If it does not contain '-' then it has to be assumed a script.
+	// First check the first token passed to the script. If it does not contain '-' then it has to be assumed as a script.
 	if !strings.Contains(splitCommand[1], `-`) {
 		return splitCommand[1], nil
 	}

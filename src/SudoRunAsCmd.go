@@ -146,7 +146,7 @@ func NewSudoEntry(fullCmd string, sudoFlags RunAsFlags) *SudoRunAsCmd {
 		cmd.pathIsReadable = IsReadable(cmd.command)
 		cmd.pathIsWritable = IsWritable(cmd.command)
 		cmd.pathStat, _ = os.Stat(cmd.command)
-		cmd.parentDirStat, _ = os.Stat(filepath.Dir(cmd.command))
+		//cmd.parentDirStat, _ = os.Stat(filepath.Dir(cmd.command))
 
 		if sysInfo, ok := cmd.pathStat.Sys().(*syscall.Stat_t); ok {
 			userId := int(sysInfo.Uid)
@@ -161,33 +161,33 @@ func NewSudoEntry(fullCmd string, sudoFlags RunAsFlags) *SudoRunAsCmd {
 				fmt.Println("Error:", err)
 			}
 		}
-	} else {
-		// It might be a good sign since we just might not have permissions to access the file.
-		// However, it might turn out that the file has not been created, and we could exploit that if
-		// we could write to a parent directory.
-		// Let see if its parent directory is accessible for us .
+	}
 
-		// filepath.Dir() returns "." when a path has been empty or it does not contain directories.
-		parentDir := filepath.Dir(cmd.command)
-		if parentDir != "." {
-			if cmd.parentDirStat, err = os.Stat(parentDir); err != nil {
-				cmd.parentDirStat = nil
-				if os.IsNotExist(err) {
-					// this error is a bit tricky since the directory might still exist but its parent
-					// directory is not readable for us.
-					cmd.parentDirExists = false
-				}
-				if os.IsPermission(err) {
-					// this is error is clear - we do not have permissions to read content of this directory.
-					cmd.parentDirExists = true
-					cmd.parentDirReadable = false
-				}
-			} else {
-				// it might be possible to exploit this command if we have permissions to write to the parent directory.
-				cmd.parentDirExists = true
-				cmd.parentDirReadable = IsAccessible(filepath.Dir(cmd.command))
-				cmd.parentDirWritable = IsDirWritable(filepath.Dir(cmd.command))
+	// It might be a good sign since we just might not have permissions to access the file.
+	// However, it might turn out that the file has not been created, and we could exploit that if
+	// we could write to a parent directory.
+	// Let see if its parent directory is accessible for us .
+
+	// filepath.Dir() returns "." when a path has been empty or it does not contain directories.
+	parentDir := filepath.Dir(cmd.command)
+	if parentDir != "." {
+		if cmd.parentDirStat, err = os.Stat(parentDir); err != nil {
+			cmd.parentDirStat = nil
+			if os.IsNotExist(err) {
+				// this error is a bit tricky since the directory might still exist but its parent
+				// directory is not readable for us.
+				cmd.parentDirExists = false
 			}
+			if os.IsPermission(err) {
+				// this is error is clear - we do not have permissions to read content of this directory.
+				cmd.parentDirExists = true
+				cmd.parentDirReadable = false
+			}
+		} else {
+			// it might be possible to exploit this command if we have permissions to write to the parent directory.
+			cmd.parentDirExists = true
+			cmd.parentDirReadable = IsAccessible(filepath.Dir(cmd.command))
+			cmd.parentDirWritable = IsDirWritable(filepath.Dir(cmd.command))
 		}
 	}
 

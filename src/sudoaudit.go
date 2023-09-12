@@ -171,52 +171,6 @@ func getRunAsRootSudoCommands(lines []string) (sudoCommands []*SudoRunAsCmd) {
 	return sudoCommands
 }
 
-//func getRunAsRootSudoCommands(lines []string) (nopasswdEntries []string, noexecEntries []string, bothEntries []string, passwdEntries []string) {
-//	entries := getRunAsSudoEntries(lines)
-//
-//	// Find all root or ALL runAs lines
-//	if rootEntries := findLinesWithPattern(`^ *\((root|ALL) *(\:?.+)?\){1}`, entries...); rootEntries != nil {
-//		//entries = removePatternFromLines(UserRunAsEntry, rootEntries...)
-//		for _, rootEntry := range rootEntries {
-//			var rootCommands []string
-//			entry := removePatternFromLines(UserRunAsEntry, rootEntry)[0]
-//			entry = strings.Join(strings.Fields(entry), " ")
-//			for _, cmd := range strings.Split(entry, ",") {
-//				rootCommands = append(rootCommands, strings.TrimSpace(cmd))
-//			}
-//
-//			if strings.Contains(rootEntry, "NOPASS") && strings.Contains(rootEntry, "NOEXEC") {
-//				bothEntries = append(bothEntries, rootCommands...)
-//			} else if strings.Contains(rootEntry, "NOEXEC") {
-//				noexecEntries = append(noexecEntries, rootCommands...)
-//			} else if strings.Contains(rootEntry, "NOPASS") {
-//				nopasswdEntries = append(nopasswdEntries, rootCommands...)
-//			} else {
-//				passwdEntries = append(nopasswdEntries, rootCommands...)
-//			}
-//		}
-//		for _, entry := range entries {
-//			entry = strings.Join(strings.Fields(entry), " ")
-//			for _, cmd := range strings.Split(entry, ",") {
-//				rootCommands = append(rootCommands, strings.TrimSpace(cmd))
-//			}
-//		}
-//	}
-//
-//	return
-//}
-
-/*
-- check if they are pathIsWritable - ERROR
-- check if they are pathIsReadable - WARNING about potential exploitation if this is a script
-- check if this is an absolute path - ERROR if not
-- if a cmd is bash or any of a scripting languages, then find the script and check its permissions
-
-+ how to find out if the cmd is a linux executable and can be executed through execution PATH
-+ python, bash and perl scripts detection through mime types
-+ check if the cmd is on the GTFOBins list -> if it is then it is EXPLOITABLE
-*/
-
 func init() {
 	var err error
 	currentUser, err = user.Current()
@@ -230,6 +184,160 @@ func init() {
 		fmt.Println("[!!] Failed to obtain a hostname. Aborting!\n")
 		os.Exit(1)
 	}
+}
+
+func GetSudoCommands() []string {
+	sudo, err := exec.Command("sudo", "-l", "-n").Output()
+
+	// sudo -l requires a password
+	if err != nil {
+		fmt.Printf("[-] Failed to execute 'sudo -l' without password.\n")
+		fmt.Printf("[*] Please provide password: ")
+		password, err := terminal.ReadPassword(0)
+
+		if err != nil {
+			fmt.Println("[-] Failed to read password:", err)
+			os.Exit(1)
+		}
+
+		fmt.Println()
+		cmd := exec.Command("sudo", "-S", "-l")
+
+		// Create a bytes.Buffer and write the password to it, followed by a newline
+		var stdinBuf bytes.Buffer
+		stdinBuf.Write(password)
+		stdinBuf.WriteByte('\n')
+
+		// Set the stdin of the command to the buffer
+		cmd.Stdin = &stdinBuf
+
+		// Run the command and capture stdout and stderr
+		sudo, err = cmd.Output()
+		if err != nil {
+			fmt.Println("[-] Failed to run sudo -l with password: ", err)
+			os.Exit(1)
+		}
+	}
+
+	// get output from 'sudo -l', find all commands that can be run as root and analyze them
+	return strings.Split(string(sudo), "\n")
+}
+
+func GetAllSudoCommands(sudoCommands []*SudoRunAsCmd) []string {
+	var list []string
+
+	for _, sudoCmd := range sudoCommands {
+		list = append(list, sudoCmd.fullCommand)
+	}
+
+	return list
+}
+
+func GetAllExecutablesWithPermissions(sudoCommands []*SudoRunAsCmd) ([]string, map[string]string) {
+	var dict map[string]string = make(map[string]string)
+
+	for _, sudoCmd := range sudoCommands {
+		// collect all executables with their permissions, also remove duplicates -> that's why map is used.
+		if _, ok := dict[sudoCmd.command]; !ok && sudoCmd.pathExists {
+			dict[sudoCmd.command] = sudoCmd.printFileInfo()
+		}
+	}
+
+	keys := make([]string, 0, len(dict))
+
+	// collect keys
+	for k := range dict {
+		keys = append(keys, k)
+	}
+
+	// sort keys
+	sort.Strings(keys)
+
+	return keys, dict
+}
+
+func GetAllNotFoundExecutables(sudoCommands []*SudoRunAsCmd) ([]string, map[string]string) {
+	var dict map[string]string = make(map[string]string)
+
+	for _, sudoCmd := range sudoCommands {
+		// collect all executables with their permissions, also remove duplicates -> that's why map is used.
+		if _, ok := dict[sudoCmd.command]; !ok && !sudoCmd.pathExists {
+			dict[sudoCmd.command] = sudoCmd.fullCommand
+		}
+	}
+
+	keys := make([]string, 0, len(dict))
+
+	// collect keys
+	for k := range dict {
+		keys = append(keys, k)
+	}
+
+	// sort keys
+	sort.Strings(keys)
+
+	return keys, dict
+}
+
+// GetCommandsWithWritableParentDirs returns list of sudo commands that have writable parent directories.
+// Parent directory of an executable is writable, which allows to replace the executable with a malicious copy.
+// REMARK:
+// Checking ownership is not needed since a user can create or replace a file in a directory
+// also regardless whether a file exists.
+func GetCommandsWithWritableParentDirs(sudoCommands []*SudoRunAsCmd) (writableParentDirExecutables []*SudoRunAsCmd) {
+	for _, sudoCmd := range sudoCommands {
+		if sudoCmd.IsDirWritable() && sudoCmd.DoesDirExist() {
+			writableParentDirExecutables = append(writableParentDirExecutables, sudoCmd)
+		}
+	}
+	return writableParentDirExecutables
+}
+
+// GetCommandsWithWritableExecutables returns list of sudo runAs commands that have writable executables.
+// Executable (binary or script) is writable thus vulnerable since it can be changed to get root
+// REMARK:
+// Checking ownership is not needed here since a user can modify a file
+func GetCommandsWithWritableExecutables(sudoCommands []*SudoRunAsCmd) (writableExecutables []*SudoRunAsCmd) {
+	for _, sudoCmd := range sudoCommands {
+		if sudoCmd.DoesFileExist() && sudoCmd.IsFileWritable() {
+			writableExecutables = append(writableExecutables, sudoCmd)
+		}
+	}
+	return writableExecutables
+}
+
+// GetCommandsWithKnownExploitableExecutables returns list of sudo runAs commands that have an executables that
+// is known to be exploitable when run with sudo - is present on the GTFOBins sudo executables.
+func GetCommandsWithKnownExploitableExecutables(sudoCommands []*SudoRunAsCmd) (knownExploitableExecutable []*SudoRunAsCmd) {
+	for _, sudoCmd := range sudoCommands {
+		// file exists and is known exploitable binary per GTFOBins
+		if sudoCmd.DoesFileExist() && IsListed(sudoCmd.command, exploitableSudoBinaries) {
+			knownExploitableExecutable = append(knownExploitableExecutable, sudoCmd)
+		}
+	}
+	return knownExploitableExecutable
+}
+
+// IsALLPresent returns true when it finds ALL literal on the list of sudo runAs commands.
+func IsALLPresent(sudoCommands []*SudoRunAsCmd) bool {
+	for _, sudoCmd := range sudoCommands {
+		// this is the worst case if user can run ALL commands as root
+		if sudoCmd.command == "ALL" {
+			return true
+		}
+	}
+	return false
+}
+
+// GetCommandsForManualAnalysis returns list of sudo runAs commands that have to be analyzed manually, because the
+// executable could not be derived automatically.
+func GetCommandsForManualAnalysis(sudoCommands []*SudoRunAsCmd) (manualAnalysisNeeded []*SudoRunAsCmd) {
+	for _, sudoCmd := range sudoCommands {
+		if sudoCmd.command == "" {
+			manualAnalysisNeeded = append(manualAnalysisNeeded, sudoCmd)
+		}
+	}
+	return manualAnalysisNeeded
 }
 
 func printCmdInfo(bufferedPrintout *bytes.Buffer, cmd *SudoRunAsCmd) {
@@ -249,59 +357,36 @@ func printCmdInfo(bufferedPrintout *bytes.Buffer, cmd *SudoRunAsCmd) {
 
 func main() {
 	// https://unix.stackexchange.com/questions/473950/sudo-disallow-shell-escapes-as-a-default
+	// TODO:
+	// - add analysis of secure_path variable - whether an executable is on this path if absolute path is not provided
 	// sudo -l | grep -o -E 'secure_path=(\/[[:alnum:]]+(\\:)?)+'
-	var manualAnalysisNeeded []*SudoRunAsCmd
-	var knownExploitableBinaries []*SudoRunAsCmd
-	var writableExecutables []*SudoRunAsCmd
-	var writableParentDirExecutables []*SudoRunAsCmd
-	//var exploitableExecutables []*SudoRunAsCmd
+
+	var manualAnalysisNeeded []*SudoRunAsCmd         // commands that need to be analyzed manually
+	var knownExploitableExecutable []*SudoRunAsCmd   // executables that are know to be exploitable per GTFOBins
+	var writableExecutables []*SudoRunAsCmd          // writable executables that can be used to exploit the system
+	var writableParentDirExecutables []*SudoRunAsCmd // writable parent directory of a executable
+	// commandPermList map sorts and removes duplicates of executables, it will be used to print all of them with permissions
+	var commandPermList map[string]string = make(map[string]string)
+	// notFoundCommandList map collects not found executables and removes duplicates
+	var notFoundCommandList map[string]string = make(map[string]string)
+	// allSudoRunAsCommands slice collects all sudo runAs commands, they will be printed in the report
+	var allSudoRunAsCommands []string
 
 	fmt.Printf("[+] Starting application: %s\n", filepath.Base(os.Args[0]))
 
-	sudo, err := exec.Command("sudo", "-l", "-n").Output()
-	if err != nil {
-		fmt.Printf("[-] Failed to execute 'sudo -l' without password.\n")
-		//log.Fatalf("Execution of 'sudo -l' failed with error: %s\n", err.Error())
-		fmt.Printf("[*] Please provide password: ")
-		password, err := terminal.ReadPassword(0)
-		if err != nil {
-			fmt.Println("[-] Failed to read password:", err)
-			return
-		}
-		fmt.Println()
-		cmd := exec.Command("sudo", "-S", "-l")
+	sudoRunAsLines := GetSudoCommands()
+	sudoCommands := getRunAsRootSudoCommands(sudoRunAsLines)
 
-		// Create a bytes.Buffer and write the password to it, followed by a newline
-		var stdinBuf bytes.Buffer
-		stdinBuf.Write(password)
-		stdinBuf.WriteByte('\n')
-
-		// Set the stdin of the command to the buffer
-		cmd.Stdin = &stdinBuf
-
-		// Run the command and capture stdout and stderr
-		sudo, err = cmd.Output()
-		if err != nil {
-			fmt.Println("[-] Failed to run sudo -l with password: ", err)
-			return
-		}
-	}
-	lines := strings.Split(string(sudo), "\n")
-
-	sudoCommands := getRunAsRootSudoCommands(lines)
-
-	fmt.Println("\n\t\t\tAUDIT RESULTS:\n\n")
+	// analyze sudo runAs entries and generate a report
+	fmt.Println("\n\t\t\tSUDO AUDIT RESULTS:\n\n")
 	fmt.Printf("Date: %s\n", time.Now().Format(time.DateTime))
 	fmt.Printf("Host: %s\n", hostName)
 	fmt.Printf("User: %s\n\n", currentUser.Username)
 	fmt.Println()
 	fmt.Printf("Found %d command(s) that can be executed with root privileges via sudo\n\n", len(sudoCommands))
 
-	var commandPermList map[string]string = make(map[string]string)
-	var notFoundCommandList map[string]string = make(map[string]string)
-
+	// bufferedPrintout buffer is used to collect all printouts for a report
 	var bufferedPrintout *bytes.Buffer = &bytes.Buffer{}
-	var allSudoRunAsCommands []string
 
 	for _, sudoCmd := range sudoCommands {
 		allSudoRunAsCommands = append(allSudoRunAsCommands, sudoCmd.fullCommand)
@@ -313,34 +398,39 @@ func main() {
 			continue
 		}
 
+		// this is the worst case if user can run ALL commands as root
 		if sudoCmd.command == "ALL" {
 			_, _ = fmt.Fprintf(bufferedPrintout, "\n[!!] CRITICAL! sudo has been configured to allow %s user to run ALL executables/commands on the %s host with root prvileges\n", currentUser.Username, hostName)
 			//continue
 		}
 
+		// file exists and is known exploitable binary per GTFOBins
 		if sudoCmd.DoesFileExist() && IsListed(sudoCmd.command, exploitableSudoBinaries) {
-			knownExploitableBinaries = append(knownExploitableBinaries, sudoCmd)
+			knownExploitableExecutable = append(knownExploitableExecutable, sudoCmd)
 		}
 
 		// Checking ownership is not needed here since a user can modify a file
+		// Executable (binary or script) is writable thus vulnerable since it can be changed to get root
 		if sudoCmd.DoesFileExist() && sudoCmd.IsFileWritable() {
 			writableExecutables = append(writableExecutables, sudoCmd)
 		}
 
 		// Checking ownership is not needed here since a user can create or replace a file in a directory
 		// also regardless whether a file exists
+		// Parent directory of an executable is writable, which allows to replace the executable with malicious copy
 		if sudoCmd.IsDirWritable() && sudoCmd.DoesDirExist() {
 			writableParentDirExecutables = append(writableParentDirExecutables, sudoCmd)
 		}
 
+		// collect all executables with their permissions, also remove duplicates -> that's why map is used.
 		if _, ok := commandPermList[sudoCmd.command]; !ok && sudoCmd.pathExists {
 			commandPermList[sudoCmd.command] = sudoCmd.printFileInfo()
 		}
 
+		// collect all commands that are not present or accessible on the system for a user that has run the audit
 		if _, ok := notFoundCommandList[sudoCmd.command]; !ok && !sudoCmd.pathExists {
 			notFoundCommandList[sudoCmd.command] = sudoCmd.fullCommand
 		}
-
 	}
 
 	// Reporting:
@@ -352,63 +442,81 @@ func main() {
 	// - list all sudo runAs commands that need manual analysis
 
 	// print list of sudo runas entries, each in a seperate line
-	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 1] List of sudo runas commands (executables with options/parameters):\n")
-	sort.Strings(allSudoRunAsCommands)
-	for _, sudoCmd := range allSudoRunAsCommands {
-		_, _ = fmt.Fprintf(bufferedPrintout, "%s\n", sudoCmd)
+	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 1] List of sudo runAs commands (executables with options/parameters):\n")
+	if len(allSudoRunAsCommands) > 0 {
+		sort.Strings(allSudoRunAsCommands)
+		for _, sudoCmd := range allSudoRunAsCommands {
+			_, _ = fmt.Fprintf(bufferedPrintout, "%s\n", sudoCmd)
+		}
+	} else {
+		_, _ = fmt.Fprintf(bufferedPrintout, "Found no sudo entries that can be executed/run as root!\n")
+		os.Exit(0)
+	}
+	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 2] List of sudo runAs executables (sorted and unique):\n")
+
+	if len(commandPermList) > 0 {
+		// sort and remove duplicate of executables
+		keys := make([]string, 0, len(commandPermList))
+
+		// collect keys
+		for k := range commandPermList {
+			keys = append(keys, k)
+		}
+
+		// sort keys
+		sort.Strings(keys)
+
+		// print the list of executables along with permissions and ownership
+		for _, key := range keys {
+			_, _ = fmt.Fprintf(bufferedPrintout, "%s\n", commandPermList[key])
+		}
+
+	} else {
+		_, _ = fmt.Fprintf(bufferedPrintout, "Could not derive any executables from sudo entries.\n")
 	}
 
-	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 2] List of sudo runas executables (sorted and unique):\n")
-	// sort and remove duplicate of executables
-	keys := make([]string, 0, len(commandPermList))
-
-	// collect keys
-	for k := range commandPermList {
-		keys = append(keys, k)
-	}
-
-	// sort keys
-	sort.Strings(keys)
-
-	// print the list of executables along with permissions and ownership
-	for _, key := range keys {
-		_, _ = fmt.Fprintf(bufferedPrintout, "%s\n", commandPermList[key])
-	}
-
-	if len(knownExploitableBinaries) > 0 {
-		_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 3] List of executables that are known to be exploitable per GTFOBins. Check GTFOBins to get detailed information about potential exploitation methods.\n")
-		//_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 3] List of Found %d potential vulnerabilities based on known exploitable executables. Check GTFOBins to get detailed information about potential exploitation methods.\n", len(knownExploitableBinaries))
-		for _, cmd := range knownExploitableBinaries {
+	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 3] Executables that are known to be exploitable per GTFOBins. Check GTFOBins to get detailed information about potential exploitation methods.\n")
+	if len(knownExploitableExecutable) > 0 {
+		//_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 3] List of Found %d potential vulnerabilities based on known exploitable executables. Check GTFOBins to get detailed information about potential exploitation methods.\n", len(knownExploitableExecutable))
+		for _, cmd := range knownExploitableExecutable {
 			_, _ = fmt.Fprintln(bufferedPrintout)
 			printCmdInfo(bufferedPrintout, cmd)
 		}
+	} else {
+		_, _ = fmt.Fprintf(bufferedPrintout, "Found no executables that are known to be exploitable!\n")
 	}
 
+	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 4] List of writable executables:\n")
 	if len(writableExecutables) > 0 {
-		_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 4] List of writable executables:\n")
 		//_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 4] Found %d exploitable executables:\n", len(exploitableExecutables))
 		for _, cmd := range writableExecutables {
 			_, _ = fmt.Fprintln(bufferedPrintout)
 			printCmdInfo(bufferedPrintout, cmd)
 		}
+	} else {
+		_, _ = fmt.Fprintf(bufferedPrintout, "Found no writable executables!\n")
 	}
 
+	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 5] List of executables (existing and non-existing) that parent directories are writable:\n")
 	if len(writableParentDirExecutables) > 0 {
-		_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 5] List of executables (existing and non-existing) that parent directories are writable:\n")
 		//_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 4] Found %d exploitable executables:\n", len(exploitableExecutables))
 		for _, cmd := range writableParentDirExecutables {
 			_, _ = fmt.Fprintln(bufferedPrintout)
 			printCmdInfo(bufferedPrintout, cmd)
 		}
+	} else {
+		_, _ = fmt.Fprintf(bufferedPrintout, "Found no writable parent directories of executables!\n")
 	}
 
+	_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 6] List of sudo runAs commands that require manual analysis:\n")
 	if len(manualAnalysisNeeded) > 0 {
-		_, _ = fmt.Fprintf(bufferedPrintout, "\n[SECTION 6] List of sudo runAs commands that require manual analysis:\n")
 		//_, _ = fmt.Fprintf(bufferedPrintout, "\n[+] %d found commands require manual analysis:\n", len(manualAnalysisNeeded))
 		for _, cmd := range manualAnalysisNeeded {
 			_, _ = fmt.Fprintln(bufferedPrintout)
 			printCmdInfo(bufferedPrintout, cmd)
 		}
+	} else {
+		_, _ = fmt.Fprintf(bufferedPrintout, "No sudo runAs commands require manual analysis!\n")
 	}
 
 	fmt.Printf("%s", bufferedPrintout.String())
